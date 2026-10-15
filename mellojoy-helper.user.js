@@ -1,13 +1,13 @@
- // ==UserScript==
- // @name         Mellojoy 13:00予約サポート
- // @namespace    local.mellojoy.helper
- // @version      4.0.0
- // @description  満席を避けて予約画面の操作を補助
- // @match        https://mellojoylucky.cn/*
- // @match        https://*.mellojoylucky.cn/*
- // @run-at       document-end
- // @grant        none
- // ==/UserScript==
+// ==UserScript==
+// @name         Mellojoy 13:00予約サポート
+// @namespace    local.mellojoy.helper
+// @version      4.0.0
+// @description  満席を避けて予約画面の操作を補助
+// @match        https://mellojoylucky.cn/*
+// @match        https://*.mellojoylucky.cn/*
+// @run-at       document-end
+// @grant        none
+// ==/UserScript==
 
  (function () {
    'use strict';
