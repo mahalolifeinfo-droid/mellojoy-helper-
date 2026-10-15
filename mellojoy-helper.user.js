@@ -1,4 +1,3 @@
-
  // ==UserScript==
  // @name         Mellojoy 13:00予約サポート
  // @namespace    local.mellojoy.helper
@@ -298,3 +297,4 @@
    if (document.body) start();
    else document.addEventListener('DOMContentLoaded', start, { once: true });
  })();
+く
