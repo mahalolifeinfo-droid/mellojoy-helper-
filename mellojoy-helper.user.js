@@ -1,4 +1,3 @@
-
  // ==UserScript==
  // @name         Mellojoy 13:00予約自動サポート
  // @namespace    local.mellojoy.helper
