@@ -1,245 +1,322 @@
- // ==UserScript==
- // @name         Mellojoy 13:00予約自動サポート
- // @namespace    local.mellojoy.helper
- // @version      2.1.0
- // @description  予約サポートパネルと予約操作の補助
- // @match        https://mellojoylucky.cn/*
- // @match        https://*.mellojoylucky.cn/*
- // @run-at       document-end
- // @grant        none
- // ==/UserScript==
 
- (function () {
-   'use strict';
-   if (window.top !== window.self) return;
+// ==UserScript==
+// @name         Mellojoy 13:00予約サポート
+// @namespace    local.mellojoy.helper
+// @version      3.0.0
+// @description  13時の更新から予約操作を順番に補助
+// @match        https://mellojoylucky.cn/*
+// @match        https://*.mellojoylucky.cn/*
+// @run-at       document-end
+// @grant        none
+// ==/UserScript==
 
-   const TARGET_TIME = '16:30–17:30';
-   const RELEASE_DAY_OFFSET = 6;
-   const PREFIX = 'mellojoy-auto-';
-   const today = new Date().toLocaleDateString('sv-SE');
-   const stageKey = PREFIX + 'stage-' + today;
-   const refreshedKey = PREFIX + 'refreshed-' + today;
+(function () {
+  'use strict';
 
-   let stage = sessionStorage.getItem(stageKey) || 'wait';
-   let busy = false;
+  const TARGET_TIME = '16:30';
+  const RELEASE_OFFSET_DAYS = 6;
+  const PREFIX = 'mellojoyHelperV3';
 
-   const panel = document.createElement('div');
-   panel.id = 'mellojoy-helper-panel';
-   Object.assign(panel.style, {
-     position: 'fixed', right: '10px', bottom: '16px',
-     zIndex: '2147483647',
-     width: 'min(290px, calc(100vw - 20px))',
-     padding: '14px', boxSizing: 'border-box',
-     background: '#fff', color: '#222',
-     border: '2px solid #ef8bb6', borderRadius: '14px',
-     boxShadow: '0 4px 18px rgba(0,0,0,.22)',
-     font: '14px/1.5 -apple-system, BlinkMacSystemFont, sans-serif'
-   });
+  if (window.__mellojoyHelperV3) return;
+  window.__mellojoyHelperV3 = true;
 
-   panel.innerHTML = `
-     <div style="font-weight:700;font-size:16px;color:#d94f88;margin-bottom:8px">
-       🍬 Mellojoy予約サポート
-     </div>
-     <div id="mj-countdown" style="margin-bottom:6px">13:00まで --:--</div>
-     <div id="mj-status" style="margin-bottom:10px">準備中…</div>
-     <button id="mj-refresh" style="width:100%;padding:10px;border:0;border-radius:9px;background:#ef8bb6;color:#fff;font-weight:700;font-size:14px">
-       ページを更新する
-     </button>
-     <div style="font-size:11px;color:#777;margin-top:7px">
-       目標枠：16:30–17:30
-     </div>
-   `;
-   document.body.appendChild(panel);
+  const $ = (id) => document.getElementById(id);
 
-   const statusEl = panel.querySelector('#mj-status');
-   const countdownEl = panel.querySelector('#mj-countdown');
+  function normalize(text) {
+    return (text || '')
+      .toLowerCase()
+      .replace(/[ \t\r\n　]/g, '')
+      .replace(/[–—−－〜～]/g, '-')
+      .replace(/：/g, ':');
+  }
 
-   function setStage(next, message) {
-     stage = next;
-     sessionStorage.setItem(stageKey, next);
-     statusEl.textContent = message || ({
-       wait: '13:00の予約枠開放を待っています',
-       date: '開放日の選択を確認中',
-       slot: '16:30–17:30の枠を確認中',
-       lottery: '抽選参加ボタンを確認中',
-       agree: '参加確認画面を確認中',
-       result: '抽選結果を確認中',
-       save: '入場券の保存ボタンを確認中',
-       done: '保存ボタンを押しました'
-     }[next] || '処理中…');
-   }
+  function getTargetDate() {
+    const d = new Date();
+    d.setDate(d.getDate() + RELEASE_OFFSET_DAYS);
+    return {
+      month: d.getMonth() + 1,
+      day: d.getDate(),
+      label: `${d.getMonth() + 1}月${d.getDate()}日`,
+      slash: `${d.getMonth() + 1}/${d.getDate()}`,
+      key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    };
+  }
 
-   function normalize(s) {
-     return (s || '').replace(/\s+/g, '')
-       .replace(/[－−–—〜～]/g, '-');
-   }
+  const target = getTargetDate();
+  const stateKey = `${PREFIX}:${target.key}`;
+  const refreshKey = `${PREFIX}:refreshed:${new Date().toDateString()}`;
 
-   function visible(el) {
-     if (!el || !el.isConnected) return false;
-     const r = el.getBoundingClientRect();
-     const cs = getComputedStyle(el);
-     return r.width > 0 && r.height > 0 &&
-       cs.display !== 'none' && cs.visibility !== 'hidden';
-   }
+  function getStage() {
+    return sessionStorage.getItem(stateKey) || 'waiting';
+  }
 
-   function labelOf(el) {
-     return normalize(el.innerText || el.textContent || el.value || '');
-   }
+  function setStage(stage) {
+    sessionStorage.setItem(stateKey, stage);
+    showStatus(`進行状況：${stageText(stage)}`);
+  }
 
-   function clickable(el) {
-     return el.closest(
-       'button,a,[role="button"],input[type="button"],input[type="submit"],' +
-       '[onclick],[class*="btn"],[class*="button"]'
-     ) || el;
-   }
+  function stageText(stage) {
+    const labels = {
+      waiting: '13時の更新待ち',
+      date: '対象日の表示・選択待ち',
+      slot: '16:30〜17:30の枠を探しています',
+      join: '「抽選に参加」を探しています',
+      consent: '同意画面を確認しています',
+      save: '当選画面・入場券保存を確認しています',
+      done: '操作完了。画面を確認してください'
+    };
+    return labels[stage] || stage;
+  }
 
-   function findText(label, options = {}) {
-     const wanted = normalize(label);
-     const elements = [...document.querySelectorAll(
-       'button,a,[role="button"],input,div,span,p'
-     )].filter(visible);
+  function showStatus(message) {
+    const el = $('mellojoy-status');
+    if (el) el.textContent = message;
+  }
 
-     elements.sort((a, b) => {
-       const ra = a.getBoundingClientRect();
-       const rb = b.getBoundingClientRect();
-       return ra.width * ra.height - rb.width * rb.height;
-     });
+  // ページ上で表示されている文字から、押せそうな要素を探す
+  function findClickable(phrases, exact = false) {
+    const candidates = Array.from(document.querySelectorAll(
+      'button,a,[role="button"],input[type="button"],input[type="submit"],div,span,li'
+    ));
 
-     for (const el of elements) {
-       const txt = labelOf(el);
-       if (!txt.includes(wanted)) continue;
-       if (options.exclude &&
-           options.exclude.some(x => txt.includes(normalize(x)))) continue;
-       const target = clickable(el);
-       if (!visible(target) || target.disabled ||
-           target.getAttribute('aria-disabled') === 'true') continue;
-       return target;
-     }
-     return null;
-   }
+    const matches = candidates.filter((el) => {
+      if (!el.isConnected) return false;
+      const style = getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+      if (el.getClientRects().length === 0) return false;
 
-   function clickText(label, options = {}) {
-     const el = findText(label, options);
-     if (!el) return false;
-     el.click();
-     console.log('[Mellojoy] click:', label);
-     return true;
-   }
+      const raw = el.innerText || el.value || el.getAttribute('aria-label') || '';
+      const text = normalize(raw);
+      if (!text) return false;
 
-   function targetDateLabel() {
-     const d = new Date();
-     d.setDate(d.getDate() + RELEASE_DAY_OFFSET);
-     return `${d.getMonth() + 1}/${d.getDate()}`;
-   }
+      return phrases.some((phrase) => {
+        const p = normalize(phrase);
+        return exact ? text === p : text.includes(p);
+      });
+    });
 
-   panel.querySelector('#mj-refresh').addEventListener('click', () => {
-     setStage('date', 'ページを更新しています…');
-     sessionStorage.setItem(refreshedKey, '1');
-     location.reload();
-   });
+    // 文字が一致する中で、できるだけ小さい要素を優先
+    matches.sort((a, b) => {
+      const ta = normalize(a.innerText || a.value || '');
+      const tb = normalize(b.innerText || b.value || '');
+      return ta.length - tb.length;
+    });
 
-   function updateCountdown() {
-     const now = new Date();
-     const target = new Date(now);
-     target.setHours(13, 0, 0, 0);
+    const el = matches[0];
+    if (!el) return null;
 
-     if (now >= target) {
-       countdownEl.textContent = '予約枠開放時刻を過ぎています';
-       return;
-     }
-     const secs = Math.floor((target - now) / 1000);
-     const mm = String(Math.floor(secs / 60)).padStart(2, '0');
-     const ss = String(secs % 60).padStart(2, '0');
-     countdownEl.textContent = `13:00まで ${mm}:${ss}`;
-   }
+    return el.closest(
+      'button,a,[role="button"],input[type="button"],input[type="submit"]'
+    ) || el;
+  }
 
-   function scheduleRefresh() {
-     if (sessionStorage.getItem(refreshedKey) === '1') return;
+  function clickText(phrases, exact = false) {
+    const el = findClickable(phrases, exact);
+    if (!el) return false;
 
-     const now = new Date();
-     const target = new Date(now);
-     target.setHours(13, 0, 0, 0);
+    const disabled =
+      el.disabled ||
+      el.getAttribute('aria-disabled') === 'true';
 
-     if (now >= target) {
-       sessionStorage.setItem(refreshedKey, '1');
-       setStage('date', '13:00になりました。ページを更新します…');
-       location.reload();
-       return;
-     }
+    if (disabled) return false;
 
-     setTimeout(() => {
-       sessionStorage.setItem(refreshedKey, '1');
-       setStage('date', '13:00になりました。ページを更新します…');
-       location.reload();
-     }, target.getTime() - now.getTime());
-   }
+    el.click();
+    return true;
+  }
 
-   function runFlow() {
-     if (busy) return;
-     busy = true;
-     try {
-       if (stage === 'wait') return;
+  function datePhrases() {
+    return [
+      target.label,
+      target.slash,
+      `${target.month}月${target.day}日`,
+      `${String(target.month).padStart(2, '0')}/${String(target.day).padStart(2, '0')}`
+    ];
+  }
 
-       if (stage === 'date') {
-         if (clickText(targetDateLabel())) {
-           setStage('slot', '開放日を選択しました。希望時間を探しています');
-           return;
-         }
-       }
+  // ピンクのサポートパネル
+  function createPanel() {
+    if ($('mellojoy-helper-panel')) return;
 
-       if (stage === 'slot') {
-         const slot = findText(TARGET_TIME, {
-           exclude: ['満席', '受付終了', '売り切れ']
-         });
-         if (slot) {
-           slot.click();
-           setStage('lottery', '希望時間を選択しました');
-           return;
-         }
-       }
+    const panel = document.createElement('div');
+    panel.id = 'mellojoy-helper-panel';
+    panel.style.cssText = [
+      'position:fixed',
+      'right:10px',
+      'bottom:16px',
+      'z-index:2147483647',
+      'width:245px',
+      'padding:13px',
+      'background:#fff0f6',
+      'border:2px solid #f4a6c7',
+      'border-radius:14px',
+      'box-shadow:0 3px 14px #0003',
+      'font:14px/1.45 -apple-system,BlinkMacSystemFont,sans-serif',
+      'color:#5c2942'
+    ].join(';');
 
-       if (stage === 'lottery') {
-         if (clickText('抽選に参加', {
-           exclude: ['参加済み', '受付終了', '満席']
-         })) {
-           setStage('agree', '抽選参加画面へ進みました');
-           return;
-         }
-       }
+    panel.innerHTML = `
+      <div style="font-weight:800;font-size:15px;margin-bottom:6px">
+        🎀 Mellojoy 予約サポート
+      </div>
+      <div style="margin-bottom:5px">
+        対象日：<b id="mellojoy-date"></b>
+      </div>
+      <div style="margin-bottom:7px">
+        予約枠：16:30〜17:30
+      </div>
+      <div id="mellojoy-countdown" style="font-weight:700;margin-bottom:7px">
+        13:00まで確認中…
+      </div>
+      <div id="mellojoy-status" style="font-size:12px;margin-bottom:9px">
+        準備中…
+      </div>
+      <button id="mellojoy-refresh" style="width:100%;padding:8px;margin-bottom:6px;border:0;border-radius:8px;background:#e879ad;color:white;font-weight:700">
+        今すぐページを更新
+      </button>
+      <button id="mellojoy-start" style="width:100%;padding:8px;margin-bottom:6px;border:0;border-radius:8px;background:#d94f91;color:white;font-weight:700">
+        自動操作を開始
+      </button>
+      <button id="mellojoy-stop" style="width:100%;padding:7px;border:1px solid #e3a2c0;border-radius:8px;background:white;color:#7b3656">
+        自動操作を停止
+      </button>
+      <div style="font-size:11px;margin-top:7px;color:#875b70">
+        ※位置情報などの端末側の確認は手動になる場合があります。
+      </div>
+    `;
 
-       if (stage === 'agree') {
-         if (clickText('同意して参加する')) {
-           setStage('result', '抽選結果を確認しています');
-           return;
-         }
-         if (findText('入場券を保存する')) {
-           setStage('save', '当選画面を検知しました');
-           return;
-         }
-       }
+    document.body.appendChild(panel);
+    $('mellojoy-date').textContent = target.label;
 
-       if (stage === 'result' || stage === 'save') {
-         if (findText('入場券を保存する')) {
-           setStage('save', '当選画面を検知しました。保存ボタンを確認してください');
-         }
-       }
-     } catch (e) {
-       console.error('[Mellojoy] error:', e);
-       setStage(stage, 'エラーが発生しました。ページを確認してください');
-     } finally {
-       busy = false;
-     }
-   }
+    $('mellojoy-refresh').onclick = () => location.reload();
 
-   updateCountdown();
-   setInterval(updateCountdown, 1000);
-   scheduleRefresh();
-   setInterval(runFlow, 500);
+    $('mellojoy-start').onclick = () => {
+      localStorage.setItem(`${PREFIX}:enabled`, 'yes');
+      if (getStage() === 'waiting') setStage('date');
+      showStatus('自動操作を開始しました。ページを確認中…');
+      runAutomation();
+    };
 
-   const observer = new MutationObserver(runFlow);
-   observer.observe(document.documentElement, {
-     childList: true, subtree: true, characterData: true
-   });
+    $('mellojoy-stop').onclick = () => {
+      localStorage.setItem(`${PREFIX}:enabled`, 'no');
+      showStatus('自動操作を停止しました');
+    };
+  }
 
-   setStage(stage);
- })();
+  function updateCountdown() {
+    const now = new Date();
+    const release = new Date();
+    release.setHours(13, 0, 0, 0);
+
+    if (now >= release) {
+      $('mellojoy-countdown').textContent = '13:00を過ぎています';
+    } else {
+      const ms = release - now;
+      const h = Math.floor(ms / 3600000);
+      const m = Math.floor((ms % 3600000) / 60000);
+      const s = Math.floor((ms % 60000) / 1000);
+      $('mellojoy-countdown').textContent =
+        `13:00まで ${h}時間${m}分${s}秒`;
+    }
+
+    // 13時に一度だけ更新する。自動操作がONのときのみ実行
+    if (
+      now >= release &&
+      localStorage.getItem(`${PREFIX}:enabled`) === 'yes' &&
+      sessionStorage.getItem(refreshKey) !== 'yes' &&
+      getStage() === 'waiting'
+    ) {
+      sessionStorage.setItem(refreshKey, 'yes');
+      setStage('date');
+      location.reload();
+    }
+  }
+
+  function runAutomation() {
+    if (localStorage.getItem(`${PREFIX}:enabled`) !== 'yes') return;
+
+    const stage = getStage();
+
+    if (stage === 'waiting') {
+      showStatus('自動操作はONです。13時の更新を待っています');
+      return;
+    }
+
+    if (stage === 'date') {
+      const dateButton = findClickable(datePhrases());
+      if (dateButton) {
+        dateButton.click();
+        setStage('slot');
+      } else {
+        showStatus(`対象日 ${target.label} の表示を待っています`);
+      }
+      return;
+    }
+
+    if (stage === 'slot') {
+      const slot = findClickable([
+        '16:30-17:30',
+        '16:30-17:30',
+        '16:30'
+      ]);
+
+      if (slot) {
+        slot.click();
+        setStage('join');
+      } else {
+        showStatus('16:30〜17:30の枠が表示されるのを待っています');
+      }
+      return;
+    }
+
+    if (stage === 'join') {
+      if (clickText(['抽選に参加'])) {
+        setStage('consent');
+      } else {
+        showStatus('「抽選に参加」の表示を待っています');
+      }
+      return;
+    }
+
+    if (stage === 'consent') {
+      if (clickText(['同意して参加する'])) {
+        setStage('save');
+      } else {
+        showStatus('同意画面が表示されたら確認します');
+      }
+      return;
+    }
+
+    if (stage === 'save') {
+      if (clickText(['入場券を保存する'])) {
+        setStage('done');
+        localStorage.setItem(`${PREFIX}:enabled`, 'no');
+      } else {
+        showStatus('結果画面を確認中です。位置情報などの確認は手動で進めてください');
+      }
+    }
+  }
+
+  function start() {
+    createPanel();
+    updateCountdown();
+
+    setInterval(updateCountdown, 1000);
+    setInterval(runAutomation, 1000);
+
+    if (localStorage.getItem(`${PREFIX}:enabled`) === 'yes') {
+      if (getStage() === 'waiting') {
+        showStatus('自動操作ON。13時の更新を待っています');
+      } else {
+        showStatus(`自動操作ON。${stageText(getStage())}`);
+      }
+    } else {
+      showStatus('自動操作OFF。開始ボタンで有効にできます');
+    }
+  }
+
+  if (document.body) {
+    start();
+  } else {
+    document.addEventListener('DOMContentLoaded', start, { once: true });
+  }
+})();
