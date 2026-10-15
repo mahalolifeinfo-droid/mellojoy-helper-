@@ -203,12 +203,6 @@
      }
 
      if (current === 'date') {
-       // 時間枠がすでに表示されていれば、日付は選択済みと判断
-       if (timeRow()) {
-         setStage('slot', '16:30–17:30の枠を確認しています');
-         return;
-       }
-
        const dateButton = findTextElement([dateSlash], false);
        if (dateButton && tryClick(dateButton)) {
          setStage('slot', '対象日を選択しました。時間枠を確認しています');
