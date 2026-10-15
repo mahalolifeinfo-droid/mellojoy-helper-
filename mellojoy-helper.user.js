@@ -1,8 +1,8 @@
-﻿// ==UserScript==
+// ==UserScript==
 // @name         Mellojoy 13:00予約サポート
 // @namespace    local.mellojoy.helper
-// @version      4.1.0
-// @description  予約操作を補助し、満席判定と許可後の再開を改善
+// @version      5.0.0
+// @description  13時更新・予約枠探索・段階保持を改善
 // @match        https://mellojoylucky.cn/*
 // @match        https://*.mellojoylucky.cn/*
 // @run-at       document-end
@@ -12,10 +12,10 @@
 (function () {
   'use strict';
 
-  if (window.__mellojoyHelperV41) return;
-  window.__mellojoyHelperV41 = true;
+  if (window.__mellojoyHelperV50) return;
+  window.__mellojoyHelperV50 = true;
 
-  const PREFIX = 'mellojoyV41';
+  const PREFIX = 'mellojoyV50';
   const TARGET_TIME = '16:30';
   const RELEASE_OFFSET_DAYS = 6;
 
@@ -25,13 +25,16 @@
   const mm = target.getMonth() + 1;
   const dd = target.getDate();
   const dateSlash = `${mm}/${dd}`;
-  const dateKey = `${target.getFullYear()}-${mm}-${dd}`;
+  const dateKey =
+    `${target.getFullYear()}-${mm}-${dd}`;
 
   const stageKey = `${PREFIX}:stage:${dateKey}`;
   const enabledKey = `${PREFIX}:enabled`;
   const refreshKey = `${PREFIX}:refreshed:${dateKey}`;
 
   let busy = false;
+  let countdownTimer = null;
+  let runTimer = null;
 
   function stage() {
     return sessionStorage.getItem(stageKey) || 'waiting';
@@ -50,7 +53,7 @@
   }
 
   function status(message) {
-    const el = document.getElementById('mellojoy-v41-status');
+    const el = document.getElementById('mellojoy-v50-status');
     if (el) el.textContent = message;
   }
 
@@ -82,10 +85,10 @@
   function clickableAncestor(el) {
     let current = el;
 
-    for (let i = 0; current && i < 5; i++, current = current.parentElement) {
+    for (let i = 0; current && i < 6; i++, current = current.parentElement) {
       if (current.matches &&
           current.matches(
-            'button,a,[role="button"],input[type="button"],input[type="submit"]'
+            'button,a,[role="button"],[tabindex],input[type="button"],input[type="submit"]'
           )) {
         return current;
       }
@@ -94,10 +97,12 @@
     return el;
   }
 
-  function findTextElement(phrases, exact) {
-    const elements = Array.from(document.querySelectorAll(
-      'button,a,[role="button"],input[type="button"],input[type="submit"],div,span,li'
-    ));
+  function findTextElement(phrases, exact = false) {
+    const selector =
+      'button,a,[role="button"],[tabindex],input[type="button"],' +
+      'input[type="submit"],div,span,li';
+
+    const elements = Array.from(document.querySelectorAll(selector));
 
     const found = elements.filter(el => {
       if (!visible(el)) return false;
@@ -106,20 +111,36 @@
         el.innerText || el.value || el.getAttribute('aria-label') || ''
       );
 
-      if (!text) return false;
+      if (!text || text.length > 80) return false;
 
-      return phrases.some(phrase =>
-        exact ? text === norm(phrase) : text.includes(norm(phrase))
-      );
+      return phrases.some(phrase => {
+        const targetText = norm(phrase);
+        return exact
+          ? text === targetText
+          : text.includes(targetText);
+      });
     });
 
     found.sort((a, b) => {
+      const aAction = a.matches(
+        'button,a,[role="button"],[tabindex],input[type="button"],input[type="submit"]'
+      ) ? 0 : 1;
+
+      const bAction = b.matches(
+        'button,a,[role="button"],[tabindex],input[type="button"],input[type="submit"]'
+      ) ? 0 : 1;
+
+      if (aAction !== bAction) return aAction - bAction;
+
       const aText = norm(a.innerText || a.value || '');
       const bText = norm(b.innerText || b.value || '');
+
       return aText.length - bText.length;
     });
 
-    return found.length ? clickableAncestor(found[0]) : null;
+    if (!found.length) return null;
+
+    return clickableAncestor(found[0]);
   }
 
   function tryClick(el) {
@@ -129,24 +150,39 @@
     return true;
   }
 
-  // 時間枠と、その近くに表示された満席表示をまとめて確認する
   function timeSlotInfo() {
-    const elements = Array.from(document.querySelectorAll(
-      'button,a,[role="button"],div,span,li'
-    ));
+    const selector =
+      'button,a,[role="button"],[tabindex],div,span,li';
+
+    const elements = Array.from(document.querySelectorAll(selector));
 
     const matches = elements.filter(el => {
       if (!visible(el)) return false;
 
       const text = norm(el.innerText || el.value || '');
 
-      return text.includes('16:30-17:30') ||
-        (text.includes('16:30') && text.includes('17:30'));
+      if (!text || text.length > 100) return false;
+
+      return (
+        text.includes('16:30-17:30') ||
+        (text.includes('16:30') && text.includes('17:30'))
+      );
     });
 
-    matches.sort((a, b) =>
-      norm(a.innerText || '').length - norm(b.innerText || '').length
-    );
+    matches.sort((a, b) => {
+      const aAction = a.matches(
+        'button,a,[role="button"],[tabindex]'
+      ) ? 0 : 1;
+
+      const bAction = b.matches(
+        'button,a,[role="button"],[tabindex]'
+      ) ? 0 : 1;
+
+      if (aAction !== bAction) return aAction - bAction;
+
+      return norm(a.innerText || '').length -
+        norm(b.innerText || '').length;
+    });
 
     if (!matches.length) return null;
 
@@ -155,7 +191,6 @@
     let combinedText = norm(original.innerText || original.value || '');
     let unavailable = disabled(original);
 
-    // 親要素に「満席」があるケースにも対応
     for (let i = 0; current && i < 5; i++, current = current.parentElement) {
       const text = norm(current.innerText || current.value || '');
 
@@ -180,12 +215,34 @@
     };
   }
 
+  function releaseTime() {
+    const release = new Date();
+    release.setHours(13, 0, 0, 0);
+    return release;
+  }
+
+  function refreshOnce() {
+    if (sessionStorage.getItem(refreshKey) === 'yes') {
+      return false;
+    }
+
+    if (stage() === 'waiting') {
+      setStage('date', '13時の更新を実行します');
+    }
+
+    sessionStorage.setItem(refreshKey, 'yes');
+    status('13時のページ更新を実行します');
+    location.reload();
+
+    return true;
+  }
+
   function makePanel() {
-    if (document.getElementById('mellojoy-v41-panel')) return;
+    if (document.getElementById('mellojoy-v50-panel')) return;
 
     const panel = document.createElement('div');
 
-    panel.id = 'mellojoy-v41-panel';
+    panel.id = 'mellojoy-v50-panel';
     panel.style.cssText =
       'position:fixed;right:10px;bottom:16px;z-index:2147483647;' +
       'width:245px;padding:13px;background:#fff0f6;' +
@@ -195,59 +252,65 @@
 
     panel.innerHTML = `
       <div style="font-weight:bold;font-size:15px;margin-bottom:6px">
-        🎀 Mellojoy 予約サポート
+        🎀 Mellojoy 予約サポート v5
       </div>
       <div>対象日：<b>${mm}/${dd}</b></div>
       <div style="margin:5px 0">予約枠：16:30–17:30</div>
-      <div id="mellojoy-v41-count" style="font-weight:bold;margin:6px 0"></div>
-      <div id="mellojoy-v41-status" style="font-size:12px;margin:7px 0">
+      <div id="mellojoy-v50-count" style="font-weight:bold;margin:6px 0"></div>
+      <div id="mellojoy-v50-status" style="font-size:12px;margin:7px 0">
         準備中
       </div>
-      <button id="mellojoy-v41-refresh"
+      <button id="mellojoy-v50-refresh"
         style="width:100%;padding:8px;margin:3px 0;border:0;
         border-radius:8px;background:#e879ad;color:white">
         今すぐページを更新
       </button>
-      <button id="mellojoy-v41-start"
+      <button id="mellojoy-v50-start"
         style="width:100%;padding:8px;margin:3px 0;border:0;
         border-radius:8px;background:#d94f91;color:white">
         自動操作を開始
       </button>
-      <button id="mellojoy-v41-stop"
+      <button id="mellojoy-v50-stop"
         style="width:100%;padding:7px;margin:3px 0;border:1px solid #e3a2c0;
         border-radius:8px;background:white;color:#7b3656">
         自動操作を停止
       </button>
       <div style="font-size:11px;margin-top:6px">
         位置情報の確認が出たら手動で許可してください。
-        許可後は画面を再確認します。
+        画面や結果は必ず確認してください。
       </div>
     `;
 
     document.body.appendChild(panel);
 
-    document.getElementById('mellojoy-v41-refresh').onclick = () => {
+    document.getElementById('mellojoy-v50-refresh').onclick = () => {
       location.reload();
     };
 
-    document.getElementById('mellojoy-v41-start').onclick = () => {
+    document.getElementById('mellojoy-v50-start').onclick = () => {
       localStorage.setItem(enabledKey, 'yes');
+
+      const now = new Date();
+
+      if (now < releaseTime()) {
+        status('自動操作ON。13時の更新を待っています');
+        countdown();
+        return;
+      }
 
       if (stage() === 'waiting') {
         setStage('date', '対象日を探しています');
       }
 
-      if (new Date().getHours() >= 13 &&
-          sessionStorage.getItem(refreshKey) !== 'yes') {
-        sessionStorage.setItem(refreshKey, 'yes');
-        location.reload();
+      if (sessionStorage.getItem(refreshKey) !== 'yes') {
+        refreshOnce();
         return;
       }
 
-      status('自動操作を開始しました');
+      status('自動操作を開始しました。画面を確認しています');
     };
 
-    document.getElementById('mellojoy-v41-stop').onclick = () => {
+    document.getElementById('mellojoy-v50-stop').onclick = () => {
       localStorage.setItem(enabledKey, 'no');
       status('自動操作を停止しました');
     };
@@ -255,31 +318,31 @@
 
   function countdown() {
     const now = new Date();
-    const release = new Date();
+    const release = releaseTime();
+    const el = document.getElementById('mellojoy-v50-count');
 
-    release.setHours(13, 0, 0, 0);
-
-    const el = document.getElementById('mellojoy-v41-count');
     if (!el) return;
 
     if (now >= release) {
       el.textContent = '13:00を過ぎています';
 
-      if (localStorage.getItem(enabledKey) === 'yes' &&
-          stage() === 'waiting' &&
-          sessionStorage.getItem(refreshKey) !== 'yes') {
-        sessionStorage.setItem(refreshKey, 'yes');
-        setStage('date', '13時の更新を実行します');
-        location.reload();
+      if (localStorage.getItem(enabledKey) === 'yes') {
+        if (sessionStorage.getItem(refreshKey) !== 'yes') {
+          refreshOnce();
+        } else if (stage() === 'waiting') {
+          setStage('date', '対象日を探しています');
+        }
       }
-    } else {
-      const ms = release - now;
-      const h = Math.floor(ms / 3600000);
-      const m = Math.floor((ms % 3600000) / 60000);
-      const s = Math.floor((ms % 60000) / 1000);
 
-      el.textContent = `13:00まで ${h}時間${m}分${s}秒`;
+      return;
     }
+
+    const ms = release - now;
+    const h = Math.floor(ms / 3600000);
+    const m = Math.floor((ms % 3600000) / 60000);
+    const s = Math.floor((ms % 60000) / 1000);
+
+    el.textContent = `13:00まで ${h}時間${m}分${s}秒`;
   }
 
   function run() {
@@ -298,10 +361,15 @@
       if (current === 'date') {
         const dateButton = findTextElement([dateSlash], false);
 
-        if (dateButton && tryClick(dateButton)) {
-          setStage('slot', '対象日を選択しました。時間枠を確認しています');
-        } else {
+        if (!dateButton) {
           status(`${dateSlash} の日付ボタンを探しています`);
+          return;
+        }
+
+        if (tryClick(dateButton)) {
+          setStage('slot', '日付を選択しました。時間枠を確認しています');
+        } else {
+          status('日付を選択できません。画面を確認してください');
         }
 
         return;
@@ -316,15 +384,12 @@
         }
 
         if (slot.text.includes('満席') || slot.unavailable) {
-          status('16:30–17:30は満席または選択不可です。画面を確認してください');
+          status('時間枠が満席または選択不可です。画面を確認してください');
           return;
         }
 
         if (tryClick(slot.element)) {
-          setStage(
-            'join',
-            '時間枠を選択しました。「抽選に参加」の表示を待っています'
-          );
+          setStage('join', '時間枠を選択しました。抽選参加ボタンを探しています');
         } else {
           status('時間枠を選択できません。画面を確認してください');
         }
@@ -338,7 +403,7 @@
         if (button && tryClick(button)) {
           setStage(
             'consent',
-            '参加ボタンを押しました。位置情報の確認が出たら手動で許可してください'
+            '参加ボタンを押しました。位置情報の許可が出たら手動で許可してください'
           );
         } else {
           status('「抽選に参加」の表示を待っています');
@@ -353,7 +418,7 @@
         if (button && tryClick(button)) {
           setStage('save', '同意ボタンを押しました。結果画面を確認しています');
         } else {
-          status('位置情報の許可後、次の画面を確認しています');
+          status('次の画面を確認しています。必要なら手動で進めてください');
         }
 
         return;
@@ -363,20 +428,17 @@
         const button = findTextElement(['入場券を保存する'], false);
 
         if (button && tryClick(button)) {
-          setStage(
-            'done',
-            '保存ボタンを押しました。保存できたか画面を確認してください'
-          );
+          setStage('done', '保存ボタンを押しました。保存結果を確認してください');
           localStorage.setItem(enabledKey, 'no');
         } else {
-          status('結果画面を確認中です。必要な確認操作は手動で進めてください');
+          status('結果画面を確認中です。必要なら手動で進めてください');
         }
 
         return;
       }
 
       if (current === 'done') {
-        status('操作は終了しました。結果を確認してください');
+        status('操作終了。入場券が保存されたか確認してください');
       }
     } finally {
       busy = false;
@@ -387,8 +449,13 @@
     makePanel();
     countdown();
 
-    setInterval(countdown, 1000);
-    setInterval(run, 1200);
+    if (!countdownTimer) {
+      countdownTimer = setInterval(countdown, 1000);
+    }
+
+    if (!runTimer) {
+      runTimer = setInterval(run, 1200);
+    }
 
     if (localStorage.getItem(enabledKey) === 'yes') {
       status('自動操作ON。画面を確認しています');
